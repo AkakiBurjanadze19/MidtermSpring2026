@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-scripts/compile.sh
-java -cp out Main --self-test
+rm -rf out
+mkdir -p out
+javac -d out src/main/java/uno/*.java
+java -cp out uno.Main --self-test

@@ -2,5 +2,4 @@
 set -eu
 
 scripts/compile.sh
-java -cp out Main "$@"
-
+java -cp out uno.Main "$@"

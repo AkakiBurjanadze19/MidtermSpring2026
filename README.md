@@ -1,71 +1,70 @@
-# Midterm UNO CLI
+# UNO CLI
 
-This is a standalone CLI UNO-like game.
+This is a command-line UNO game.
 
-The code is written as plausible feature-grown Java: almost everything lives in one procedural `Main` class. It works, but it has mixed responsibilities, duplicated rule logic, primitive-heavy card handling, global state, and condition-heavy gameplay code. The goal is to refactor it safely, not rewrite it.
+## Build Tool
 
-## Compile
+This project uses Maven as its build tool.
 
+## Commands
+
+### Local Build
+
+Compile the project:
 ```bash
-scripts/compile.sh
+mvn compile
 ```
 
-## Run Bot Games
+### Local Test
 
+Run the tests:
 ```bash
-scripts/run.sh --bots 3 --games 5 --quiet
+mvn test
 ```
 
-## Run Interactive Game
+### Local Run
 
+Run the application (example with 3 bots and 1 human player, 1 game):
 ```bash
-scripts/run.sh --human --bots 2 --games 1
+mvn exec:java -Dexec.mainClass="uno.Main" -Dexec.args="--human --bots 2 --games 1"
 ```
 
-Card input examples:
+### Package Creation
 
-```text
-R5   red 5
-YS   yellow skip
-BR   blue reverse
-G+2  green draw two
-W    wild
-W4   wild draw four
-draw draw a card
-```
-
-## Characterization Checks
-
+Create an executable JAR:
 ```bash
-scripts/test.sh
+mvn package
+```
+The JAR will be placed in `target/uno-cli-1.0.0.jar`.
+
+### Docker Build
+
+Build the Docker image:
+```bash
+docker build -t uno-cli .
 ```
 
-## Submission
+### Docker Run
 
-Submit your work through GitHub:
+Run the Docker container (example with 3 bots and 1 human player, 1 game):
+```bash
+docker run --rm uno-cli --human --bots 2 --games 1
+```
 
-1. Fork this repository to your GitHub account.
-2. Clone your fork locally.
-3. Complete the midterm work in your fork.
-4. Commit your changes with clear commit messages.
-5. Push your branch to GitHub.
-6. Open a pull request from your fork back to the original repository.
+## Logging
 
-Your pull request must include:
+The application uses slf4j logging library for logging important game events:
+- Game start
+- Player turn
+- Card played
+- Card drawn
+- Invalid input
+- Round or game end
 
-* refactored source code
-* characterization tests
-* `docs/refactoring-report.md`
-* `docs/extension-readiness.md`
+Logs are printed to the console with the INFO level.
 
-Do not submit a zip file instead of a pull request unless the instructor explicitly asks for it.
+## Notes
 
-## Rules
-
-See `docs/rules.html` for the implemented game rules.
-
-## Midterm Materials
-
-* `docs/midterm-exam.md`: midterm brief
-* `docs/rubric.md`: grading rubric
-* `docs/refactoring-guide.md`: suggested refactoring path
+- The CLI should still be readable for players; logging does not replace normal user-facing output.
+- The Docker build uses the official Eclipse Temurin JDK 25 image.
+- The application is packaged as an executable JAR with the main class set to `uno.Main`.
