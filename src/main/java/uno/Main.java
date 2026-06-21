@@ -1,5 +1,12 @@
 package uno;
+
 import java.util.ArrayList;
+import java.time.Instant;
+import uno.persistence.Game;
+import uno.persistence.GameScore;
+import uno.persistence.Player;
+import uno.persistence.dao.GameDao;
+import uno.persistence.dao.PlayerDao;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,9 +25,13 @@ public class Main {
     static ConsoleView view = new ConsoleView();
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
+    // Initialize Data Access Object (DAO) instances
+    private static final PlayerDao playerDao = new PlayerDao();
+    private static final GameDao gameDao = new GameDao();
+
     public static void main(String[] args) {
         int bots = 3;
-        int games = 1;
+        int roundsPerMatch = 1; // number of rounds (games) in a match
         boolean human = false;
         long seed = System.currentTimeMillis();
 
@@ -28,7 +39,7 @@ public class Main {
             if (args[i].equals("--bots") && i + 1 < args.length) {
                 bots = Integer.parseInt(args[++i]);
             } else if (args[i].equals("--games") && i + 1 < args.length) {
-                games = Integer.parseInt(args[++i]);
+                roundsPerMatch = Integer.parseInt(args[++i]);
             } else if (args[i].equals("--human")) {
                 human = true;
             } else if (args[i].equals("--quiet")) {
@@ -52,17 +63,74 @@ public class Main {
             return;
         }
 
-        for (int g = 1; g <= games; g++) {
-            view.announceGame(g);
-            logger.info("Starting game {}", g);
-            playGame();
+        // Ensure players are persisted
+        for (String name : state.playerNames) {
+            Player existing = playerDao.findByName(name);
+            if (existing == null) {
+                Player player = new Player(name);
+                playerDao.save(player);
+            }
         }
 
+        // Record match start time
+        Instant matchStartTime = Instant.now();
+
+        // Play the match (multiple rounds)
+        for (int r = 1; r <= roundsPerMatch; r++) {
+            view.announceGame(r);
+            logger.info("Starting round {} of match", r);
+            playGame(); // This plays one round and updates state.scores
+        }
+
+        // Record match end time
+        Instant matchEndTime = Instant.now();
+
+        // Determine the winner of the match (player with highest score)
+        int winningScore = Integer.MIN_VALUE;
+        int winningPlayerIndex = -1;
+        for (int i = 0; i < state.playerNames.size(); i++) {
+            if (state.scores[i] > winningScore) {
+                winningScore = state.scores[i];
+                winningPlayerIndex = i;
+            }
+        }
+        Player winner = null;
+        if (winningPlayerIndex >= 0) {
+            String winnerName = state.playerNames.get(winningPlayerIndex);
+            winner = playerDao.findByName(winnerName);
+        }
+
+        // Create and persist the match (game) and scores
+        Game match = new Game(matchStartTime, matchEndTime, roundsPerMatch, winner);
+        // Save the match and then the scores
+        gameDao.saveWithScores(match, createMatchScores(match, winner));
+
+        // Show final scores
         view.showFinalScores(state.playerNames, state.scores);
         logger.info("Match completed.");
         for (int i = 0; i < state.playerNames.size(); i++) {
             logger.info("{}: {}", state.playerNames.get(i), state.scores[i]);
         }
+
+        // Shutdown Hibernate connection pool
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            uno.persistence.HibernateUtil.shutdown();
+        }));
+    }
+
+    /**
+     * Create GameScore objects for each player based on their total scores in the match.
+     */
+    private static ArrayList<GameScore> createMatchScores(Game match, Player winner) {
+        ArrayList<GameScore> scores = new ArrayList<>();
+        for (int i = 0; i < state.playerNames.size(); i++) {
+            String name = state.playerNames.get(i);
+            Player player = playerDao.findByName(name);
+            int points = state.scores[i];
+            GameScore score = new GameScore(match, player, points);
+            scores.add(score);
+        }
+        return scores;
     }
 
     static void setupPlayers(int bots, boolean human) {
@@ -82,11 +150,6 @@ public class Main {
     }
 
     static void playGame() {
-        startNewRound();
-        runTurnLoop();
-    }
-
-    static void startNewRound() {
         state.buildStandardDeck();
         state.shuffleDeck();
         state.discard.clear();
@@ -95,6 +158,8 @@ public class Main {
         state.calledColor = CardColor.NONE;
         state.direction = 1;
         state.currentPlayer = state.random.nextInt(state.playerNames.size());
+
+        runTurnLoop();
     }
 
     static void runTurnLoop() {

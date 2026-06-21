@@ -1,7 +1,6 @@
 package uno;
 import java.util.ArrayList;
 import java.util.Random;
-import uno.Main;
 
 public class CharacterizationTests {
 
