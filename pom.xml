@@ -14,8 +14,8 @@
     <description>A command-line UNO game</description>
 
     <properties>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.10.0</junit.version>
         <slf4j.version>2.0.18</slf4j.version>
@@ -51,7 +51,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.12.1</version>
                 <configuration>
-                    <release>25</release>
+                    <release>21</release>
                 </configuration>
             </plugin>
 
@@ -74,10 +74,30 @@
                     <archive>
                         <manifest>
                             <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
                             <mainClass>uno.Main</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
+            </plugin>
+
+            <!-- Dependency plugin to copy dependencies -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-dependencies</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <!-- Exec plugin -->
