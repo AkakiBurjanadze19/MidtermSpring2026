@@ -24,15 +24,45 @@ public class GameState {
     final ArrayList<Card> deck = new ArrayList<Card>();
     final ArrayList<Card> discard = new ArrayList<Card>();
     int[] scores = new int[10];
+    /**
+     * Whether each player has a live "UNO!" declaration. Set when a player
+     * legitimately calls UNO on reaching one card; cleared whenever their hand
+     * grows back above one card. Used to detect a missed UNO call.
+     */
+    boolean[] saidUno = new boolean[10];
     int currentPlayer = 0;
     int direction = 1;
     Card upCard = Card.of("R0");
     CardColor calledColor = CardColor.NONE;
     Random random = new Random();
 
+    /** Number of penalty cards drawn for failing to call UNO. */
+    static final int MISSED_UNO_PENALTY = 2;
+
     /** Reseed the RNG so games are reproducible with {@code --seed N}. */
     void setSeed(long seed) {
         random.setSeed(seed);
+    }
+
+    /** True when the given player is holding exactly one card. */
+    boolean hasOneCard(int playerIndex) {
+        return hands.get(playerIndex).size() == 1;
+    }
+
+    /** Record that the given player has validly called "UNO!". */
+    void callUno(int playerIndex) {
+        saidUno[playerIndex] = true;
+    }
+
+    /**
+     * Apply the missed-UNO penalty to the given player: they draw
+     * {@link #MISSED_UNO_PENALTY} cards. Returns the number of cards drawn.
+     */
+    int applyMissedUnoPenalty(int playerIndex) {
+        for (int i = 0; i < MISSED_UNO_PENALTY; i++) {
+            hands.get(playerIndex).add(draw());
+        }
+        return MISSED_UNO_PENALTY;
     }
 
     /** Advance {@link #currentPlayer} by {@link #direction}, wrapping around. */

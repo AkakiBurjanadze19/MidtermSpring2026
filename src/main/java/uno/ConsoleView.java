@@ -22,9 +22,9 @@ public class ConsoleView {
 
     // ---------- Announcements (silent when Main.quiet is true) ----------
 
-    public void announceGame(int gameNumber) {
+    public void announceRound(int roundNumber) {
         if (Main.quiet) return;
-        System.out.println("\n=== Game " + gameNumber + " ===");
+        System.out.println("\n=== Round " + roundNumber + " ===");
     }
 
     public void showUpCard(Card upCard, CardColor calledColor) {
@@ -68,6 +68,12 @@ public class ConsoleView {
         System.out.println(playerName + " says UNO!");
     }
 
+    public void announceMissedUno(String playerName, int penaltyCards) {
+        if (Main.quiet) return;
+        System.out.println(playerName + " forgot to call UNO and draws "
+                + penaltyCards + " penalty cards.");
+    }
+
     public void announceWin(String playerName, int points) {
         if (Main.quiet) return;
         System.out.println(playerName + " wins and scores " + points);
@@ -91,11 +97,35 @@ public class ConsoleView {
     // ---------- Unconditional output (printed even with --quiet) ----------
 
     public void showHelp() {
-        System.out.println("Usage: scripts/run.sh [--bots N] [--games N] [--human] [--quiet] [--seed N]");
+        System.out.println("UNO CLI");
+        System.out.println("Usage: scripts/run.sh [options]");
+        System.out.println("  --human         add a human player (default: bots only)");
+        System.out.println("  --bots N        number of computer players (default: 3)");
+        System.out.println("  --target N      play rounds until a player reaches N points (default: "
+                + Main.DEFAULT_TARGET + ")");
+        System.out.println("  --games N       instead play exactly N rounds");
+        System.out.println("  --seed N        seed the shuffler for reproducible games");
+        System.out.println("  --quiet         suppress per-turn narration");
+        System.out.println("  --self-test     run the built-in checks and exit");
+        System.out.println("  --help          show this message");
+        System.out.println("Total players (human + bots) must be between 2 and 4.");
     }
 
     public void showError(String message) {
         System.out.println(message);
+    }
+
+    public void showStandings(ArrayList<String> playerNames, int[] scores) {
+        if (Main.quiet) return;
+        StringBuilder line = new StringBuilder("Standings:");
+        for (int i = 0; i < playerNames.size(); i++) {
+            line.append(' ').append(playerNames.get(i)).append('=').append(scores[i]);
+        }
+        System.out.println(line);
+    }
+
+    public void announceMatchWinner(String playerName, int score) {
+        System.out.println("\n" + playerName + " wins the match with " + score + " points!");
     }
 
     public void showFinalScores(ArrayList<String> playerNames, int[] scores) {
@@ -121,6 +151,13 @@ public class ConsoleView {
     public String promptColor() {
         System.out.print("Call color R/Y/G/B: ");
         return scanner.nextLine().trim().toUpperCase();
+    }
+
+    /** Ask a human player who just reached one card whether they call "UNO!". */
+    public boolean promptCallUno() {
+        System.out.print("You are down to one card. Call UNO? y/n: ");
+        String answer = scanner.nextLine();
+        return answer.equalsIgnoreCase("y") || answer.equalsIgnoreCase("yes");
     }
 
     public void notify(String message) {

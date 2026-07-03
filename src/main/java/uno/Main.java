@@ -13,10 +13,23 @@ import org.slf4j.LoggerFactory;
 /**
  * Controller / entry point for the UNO CLI.
  *
- * Holds the orchestration logic (CLI argument parsing, turn loop, bot
- * strategy, and legal-play rule) but does not own game state or console I/O.
- * Those live in {@link GameState} and {@link ConsoleView}; card behavior and
- * card-color semantics live on {@link Card} and {@link CardColor}.
+ * <p>{@code Main} owns orchestration only: it parses CLI arguments, runs the
+ * match / round / turn loops, and wires the collaborators together. The actual
+ * rules live elsewhere and are testable without a console:
+ *
+ * <ul>
+ *   <li>{@link Rules} – legal-play validation and round scoring;</li>
+ *   <li>{@link CardEffect} – the state change each played card causes;</li>
+ *   <li>{@link BotStrategy} – computer-player decisions;</li>
+ *   <li>{@link GameState} – all mutable game data and deck operations;</li>
+ *   <li>{@link ConsoleView} – every read from stdin and write to stdout.</li>
+ * </ul>
+ *
+ * <p>A <em>match</em> is a series of <em>rounds</em>. Each round is one hand of
+ * UNO that ends when a player empties their hand; that player scores the point
+ * value of every card left in the other hands. By default the match continues
+ * until a player reaches the target score (500); {@code --games N} instead
+ * plays a fixed number of rounds.
  */
 public class Main {
 
@@ -25,110 +38,139 @@ public class Main {
     static ConsoleView view = new ConsoleView();
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
+    /** Default target score for a play-to-target match, as in classic UNO. */
+    static final int DEFAULT_TARGET = 500;
+
+    /** Hard cap on rounds per match so a pathological match cannot loop forever. */
+    private static final int MAX_ROUNDS = 1000;
+
     // Initialize Data Access Object (DAO) instances
     private static final PlayerDao playerDao = new PlayerDao();
     private static final GameDao gameDao = new GameDao();
 
     public static void main(String[] args) {
         int bots = 3;
-        int roundsPerMatch = 1; // number of rounds (games) in a match
+        Integer fixedRounds = null;   // set by --games; null means "play to target"
+        int target = DEFAULT_TARGET;  // set by --target
         boolean human = false;
         long seed = System.currentTimeMillis();
 
-        for (int i = 0; i < args.length; i++) {
-            if (args[i].equals("--bots") && i + 1 < args.length) {
-                bots = Integer.parseInt(args[++i]);
-            } else if (args[i].equals("--games") && i + 1 < args.length) {
-                roundsPerMatch = Integer.parseInt(args[++i]);
-            } else if (args[i].equals("--human")) {
-                human = true;
-            } else if (args[i].equals("--quiet")) {
-                quiet = true;
-            } else if (args[i].equals("--seed") && i + 1 < args.length) {
-                seed = Long.parseLong(args[++i]);
-            } else if (args[i].equals("--self-test")) {
-                selfTest();
-                return;
-            } else if (args[i].equals("--help")) {
-                view.showHelp();
-                return;
+        try {
+            for (int i = 0; i < args.length; i++) {
+                if (args[i].equals("--bots") && i + 1 < args.length) {
+                    bots = Integer.parseInt(args[++i]);
+                } else if (args[i].equals("--games") && i + 1 < args.length) {
+                    fixedRounds = Integer.parseInt(args[++i]);
+                } else if (args[i].equals("--target") && i + 1 < args.length) {
+                    target = Integer.parseInt(args[++i]);
+                } else if (args[i].equals("--human")) {
+                    human = true;
+                } else if (args[i].equals("--quiet")) {
+                    quiet = true;
+                } else if (args[i].equals("--seed") && i + 1 < args.length) {
+                    seed = Long.parseLong(args[++i]);
+                } else if (args[i].equals("--self-test")) {
+                    selfTest();
+                    return;
+                } else if (args[i].equals("--help")) {
+                    view.showHelp();
+                    return;
+                } else {
+                    view.showError("Unknown or incomplete option: " + args[i]);
+                    view.showHelp();
+                    return;
+                }
             }
+        } catch (NumberFormatException e) {
+            view.showError("Numeric options (--bots/--games/--target/--seed) need a number.");
+            view.showHelp();
+            return;
         }
 
         state.setSeed(seed);
         setupPlayers(bots, human);
 
         if (state.playerNames.size() < 2 || state.playerNames.size() > 4) {
-            view.showError("UNO needs 2 to 4 players.");
+            view.showError("UNO needs 2 to 4 players (use --bots and/or --human).");
             return;
         }
 
-        // Ensure players are persisted
-        for (String name : state.playerNames) {
-            Player existing = playerDao.findByName(name);
-            if (existing == null) {
-                Player player = new Player(name);
-                playerDao.save(player);
-            }
-        }
-
-        // Record match start time
         Instant matchStartTime = Instant.now();
-
-        // Play the match (multiple rounds)
-        for (int r = 1; r <= roundsPerMatch; r++) {
-            view.announceGame(r);
-            logger.info("Starting round {} of match", r);
-            playGame(); // This plays one round and updates state.scores
-        }
-
-        // Record match end time
+        int roundsPlayed = playMatch(fixedRounds, target);
         Instant matchEndTime = Instant.now();
 
-        // Determine the winner of the match (player with highest score)
-        int winningScore = Integer.MIN_VALUE;
-        int winningPlayerIndex = -1;
-        for (int i = 0; i < state.playerNames.size(); i++) {
-            if (state.scores[i] > winningScore) {
-                winningScore = state.scores[i];
-                winningPlayerIndex = i;
+        int winningPlayerIndex = highestScoringPlayer();
+        String winnerName = state.playerNames.get(winningPlayerIndex);
+
+        view.showFinalScores(state.playerNames, state.scores);
+        view.announceMatchWinner(winnerName, state.scores[winningPlayerIndex]);
+        logger.info("Match completed in {} round(s). Winner: {} ({} pts).",
+                roundsPlayed, winnerName, state.scores[winningPlayerIndex]);
+
+        persistMatch(matchStartTime, matchEndTime, roundsPlayed, winnerName);
+    }
+
+    /**
+     * Play a full match and return the number of rounds played. When
+     * {@code fixedRounds} is non-null the match runs exactly that many rounds;
+     * otherwise it runs until a player reaches {@code target} points.
+     */
+    static int playMatch(Integer fixedRounds, int target) {
+        int round = 0;
+        while (round < MAX_ROUNDS) {
+            round++;
+            view.announceRound(round);
+            logger.info("Starting round {}", round);
+            playRound();
+            view.showStandings(state.playerNames, state.scores);
+
+            if (fixedRounds != null) {
+                if (round >= fixedRounds) {
+                    break;
+                }
+            } else if (state.scores[highestScoringPlayer()] >= target) {
+                break;
             }
         }
-        Player winner = null;
-        if (winningPlayerIndex >= 0) {
-            String winnerName = state.playerNames.get(winningPlayerIndex);
-            winner = playerDao.findByName(winnerName);
+        return round;
+    }
+
+    /** The index of the player with the highest cumulative score. */
+    static int highestScoringPlayer() {
+        int best = 0;
+        for (int i = 1; i < state.playerNames.size(); i++) {
+            if (state.scores[i] > state.scores[best]) {
+                best = i;
+            }
         }
+        return best;
+    }
 
-        // Create and persist the match (game) and scores
-        Game match = new Game(matchStartTime, matchEndTime, roundsPerMatch, winner);
-        // Save the match and then the scores
-        gameDao.saveWithScores(match, createMatchScores(match, winner));
-
-        // Show final scores
-        view.showFinalScores(state.playerNames, state.scores);
-        logger.info("Match completed.");
-        for (int i = 0; i < state.playerNames.size(); i++) {
-            logger.info("{}: {}", state.playerNames.get(i), state.scores[i]);
-        }
-
-        // Shutdown Hibernate connection pool
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+    /** Persist the finished match; never lets a storage failure crash the game. */
+    private static void persistMatch(Instant start, Instant end, int rounds, String winnerName) {
+        try {
+            for (String name : state.playerNames) {
+                if (playerDao.findByName(name) == null) {
+                    playerDao.save(new Player(name));
+                }
+            }
+            Player winner = playerDao.findByName(winnerName);
+            Game match = new Game(start, end, rounds, winner);
+            gameDao.saveWithScores(match, createMatchScores(match));
             uno.persistence.HibernateUtil.shutdown();
-        }));
+        } catch (Throwable t) {
+            logger.warn("Skipping match persistence: {}", t.toString());
+        }
     }
 
     /**
      * Create GameScore objects for each player based on their total scores in the match.
      */
-    private static ArrayList<GameScore> createMatchScores(Game match, Player winner) {
+    private static ArrayList<GameScore> createMatchScores(Game match) {
         ArrayList<GameScore> scores = new ArrayList<>();
         for (int i = 0; i < state.playerNames.size(); i++) {
-            String name = state.playerNames.get(i);
-            Player player = playerDao.findByName(name);
-            int points = state.scores[i];
-            GameScore score = new GameScore(match, player, points);
-            scores.add(score);
+            Player player = playerDao.findByName(state.playerNames.get(i));
+            scores.add(new GameScore(match, player, state.scores[i]));
         }
         return scores;
     }
@@ -149,7 +191,8 @@ public class Main {
         }
     }
 
-    static void playGame() {
+    /** Set up and play a single round; scores are added to {@link GameState#scores}. */
+    static void playRound() {
         state.buildStandardDeck();
         state.shuffleDeck();
         state.discard.clear();
@@ -157,9 +200,15 @@ public class Main {
         state.flipInitialUpCard();
         state.calledColor = CardColor.NONE;
         state.direction = 1;
+        state.saidUno = new boolean[state.scores.length];
         state.currentPlayer = state.random.nextInt(state.playerNames.size());
 
         runTurnLoop();
+    }
+
+    /** Backwards-compatible alias for {@link #playRound()} used by tests. */
+    static void playGame() {
+        playRound();
     }
 
     static void runTurnLoop() {
@@ -173,7 +222,7 @@ public class Main {
         view.announceSafetyLimit();
     }
 
-    /** One turn for the current player. Returns true if the game has ended. */
+    /** One turn for the current player. Returns true if the round has ended. */
     static boolean playSingleTurn() {
         String name = state.playerNames.get(state.currentPlayer);
         logger.info("Turn for player: {}", name);
@@ -200,7 +249,7 @@ public class Main {
         Card card = applyPlay(chosen, hand, name);
 
         if (handleWinIfAny(name)) {
-            logger.info("Game won by {}", name);
+            logger.info("Round won by {}", name);
             return true;
         }
 
@@ -211,6 +260,10 @@ public class Main {
     /**
      * Ask the current player for a card index, or draw one and decide whether
      * to auto-play it. Returns the index to play, or -1 to pass the turn.
+     *
+     * <p>Draw/pass rule: a player with no legal play draws exactly one card. If
+     * that card is legal they may play it immediately (bots always do, a human
+     * is asked); otherwise the turn passes.
      */
     static int pickCardOrDraw(ArrayList<Card> hand, String name) {
         int chosen = isCurrentHuman() ? askHuman(hand) : chooseBotCard(hand);
@@ -251,7 +304,7 @@ public class Main {
 
     /**
      * Apply a confirmed-legal play: remove the card, update discard and
-     * up-card, ask for a called color on wilds, announce the play and UNO.
+     * up-card, ask for a called color on wilds, then handle the UNO call.
      * Returns the played card so the caller can dispatch its effect.
      */
     static Card applyPlay(int chosen, ArrayList<Card> hand, String name) {
@@ -268,10 +321,29 @@ public class Main {
         }
 
         if (hand.size() == 1) {
-            view.announceUno(name);
+            handleUnoCall(name);
         }
         logger.info("Card played: {} by {}", card, name);
         return card;
+    }
+
+    /**
+     * Resolve the UNO call for the current player, who has just reached one
+     * card. If they call UNO they are safe; if they fail to call before the
+     * turn passes on, they are immediately caught and draw a penalty.
+     */
+    static void handleUnoCall(String name) {
+        int player = state.currentPlayer;
+        boolean called = isCurrentHuman() ? view.promptCallUno() : BotStrategy.shouldCallUno();
+        if (called) {
+            state.callUno(player);
+            view.announceUno(name);
+            logger.info("{} called UNO", name);
+        } else {
+            int drawn = state.applyMissedUnoPenalty(player);
+            view.announceMissedUno(name, drawn);
+            logger.info("{} failed to call UNO and drew {} penalty cards", name, drawn);
+        }
     }
 
     /**
@@ -282,22 +354,10 @@ public class Main {
         if (state.hands.get(state.currentPlayer).size() != 0) {
             return false;
         }
-        int points = sumOpponentPoints();
+        int points = Rules.scoreForWinner(state, state.currentPlayer);
         state.scores[state.currentPlayer] += points;
         view.announceWin(name, points);
         return true;
-    }
-
-    static int sumOpponentPoints() {
-        int points = 0;
-        for (int i = 0; i < state.hands.size(); i++) {
-            if (i != state.currentPlayer) {
-                for (int j = 0; j < state.hands.get(i).size(); j++) {
-                    points += state.hands.get(i).get(j).points();
-                }
-            }
-        }
-        return points;
     }
 
     static boolean isCurrentHuman() {
@@ -305,31 +365,7 @@ public class Main {
     }
 
     static int chooseBotCard(ArrayList<Card> hand) {
-        PlayContext context = PlayContext.of(state);
-        for (int i = 0; i < hand.size(); i++) {
-            Card card = hand.get(i);
-            if (card.rank().equals("DRAW_TWO") && isLegal(card, context)) {
-                return i;
-            }
-        }
-        for (int i = 0; i < hand.size(); i++) {
-            Card card = hand.get(i);
-            if (card.rank().equals("SKIP") && isLegal(card, context)) {
-                return i;
-            }
-        }
-        for (int i = 0; i < hand.size(); i++) {
-            Card card = hand.get(i);
-            if (card.rank().equals("NUMBER") && isLegal(card, context)) {
-                return i;
-            }
-        }
-        for (int i = 0; i < hand.size(); i++) {
-            if (hand.get(i).isWild()) {
-                return i;
-            }
-        }
-        return -1;
+        return BotStrategy.chooseCard(hand, PlayContext.of(state));
     }
 
     static int askHuman(ArrayList<Card> hand) {
@@ -347,8 +383,10 @@ public class Main {
                 logger.info("Non-numeric input: {}", input);
             }
             PlayContext context = PlayContext.of(state);
+            boolean found = false;
             for (int i = 0; i < hand.size(); i++) {
                 if (hand.get(i).code().equals(input)) {
+                    found = true;
                     if (isLegal(hand.get(i), context)) {
                         return i;
                     }
@@ -356,8 +394,10 @@ public class Main {
                     logger.info("Illegal card attempted: {}", input);
                 }
             }
-            view.notify("Card not found.");
-            logger.info("Card not found: {}", input);
+            if (!found) {
+                view.notify("Card not found. Enter an index, a card code (e.g. R5), or DRAW.");
+                logger.info("Card not found: {}", input);
+            }
         }
     }
 
@@ -369,33 +409,17 @@ public class Main {
                     return c;
                 }
             }
-            view.notify("Bad color.");
+            view.notify("Bad color. Choose R, Y, G, or B.");
         }
     }
 
     static CardColor chooseBotColor(ArrayList<Card> hand) {
-        int r = 0, y = 0, g = 0, b = 0;
-        for (int i = 0; i < hand.size(); i++) {
-            CardColor c = hand.get(i).color();
-            if (c == CardColor.R) r++;
-            else if (c == CardColor.Y) y++;
-            else if (c == CardColor.G) g++;
-            else if (c == CardColor.B) b++;
-        }
-        if (r >= y && r >= g && r >= b) return CardColor.R;
-        if (y >= r && y >= g && y >= b) return CardColor.Y;
-        if (g >= r && g >= y && g >= b) return CardColor.G;
-        return CardColor.B;
+        return BotStrategy.chooseColor(hand);
     }
 
+    /** @see Rules#isLegal(Card, PlayContext) */
     static boolean isLegal(Card card, PlayContext context) {
-        if (card.isWild()) return true;
-        if (card.color() == context.upCard().color()) return true;
-        if (context.calledColor() != CardColor.NONE && card.color() == context.calledColor()) return true;
-        if (card.rank().equals(context.upCard().rank()) && !card.rank().equals("NUMBER")) return true;
-        if (card.rank().equals("NUMBER") && context.upCard().rank().equals("NUMBER")
-                && card.number() == context.upCard().number()) return true;
-        return false;
+        return Rules.isLegal(card, context);
     }
 
     static void selfTest() {
