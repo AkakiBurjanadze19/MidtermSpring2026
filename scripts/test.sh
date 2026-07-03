@@ -1,7 +1,4 @@
 #!/usr/bin/env sh
+# Run the full JUnit test suite with Maven.
 set -eu
-
-rm -rf out
-mkdir -p out
-javac -d out src/main/java/uno/*.java
-java -cp out uno.Main --self-test
+mvn -q test

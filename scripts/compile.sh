@@ -1,6 +1,4 @@
 #!/usr/bin/env sh
+# Compile the project with Maven (pulls in the SLF4J / Hibernate / H2 classpath).
 set -eu
-
-rm -rf out
-mkdir -p out
-javac -d out src/main/java/uno/*.java
+mvn -q compile
