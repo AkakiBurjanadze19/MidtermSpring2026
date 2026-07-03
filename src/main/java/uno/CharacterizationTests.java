@@ -369,8 +369,8 @@ public class CharacterizationTests {
         ArrayList<Card> revOnly = new ArrayList<Card>();
         revOnly.add(Card.of("RR"));
         revOnly.add(Card.of("Y3"));
-        check("BUG-CHARACTERIZATION: bot does NOT pick a legal REVERSE; it returns -1 (draw)",
-                Main.chooseBotCard(revOnly) == -1);
+        check("bot now plays a legal REVERSE (index 0) instead of drawing (fixed)",
+                Main.chooseBotCard(revOnly) == 0);
 
         check("edge: Y5 on R5 is legal (number cross-match)",
                 Main.isLegal(Card.of("Y5"), new PlayContext(Card.of("R5"), CardColor.NONE)));
