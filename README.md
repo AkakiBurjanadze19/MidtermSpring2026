@@ -1,92 +1,118 @@
 # UNO CLI
 
-This is a command-line UNO game with persistence of game history and player statistics.
+A command-line implementation of UNO for 2–4 players (human and/or computer
+players), with fuller UNO rules, a rule layer that is testable without the
+console, and optional persistence of match history.
 
-## Build Tool
+## Quick start
 
-This project uses Maven as its build tool.
-
-## Persistence
-
-The application uses Hibernate ORM with an H2 database to persist game results. At the end of each match (series of rounds), the following is stored:
-- Players
-- Match (game) details: start/end timestamps, winner, number of rounds
-- Per-player scores for the match
-
-### Database Schema
-The schema consists of three tables: `Player`, `Game`, and `GameScore`. See `docs/database.md` for detailed schema information.
-
-### Configuration
-Hibernate is configured via `src/main/resources/hibernate.cfg.xml`. The database file is created in the user's home directory as `uno.mv.db`.
-
-### Query Features
-The persistence layer supports:
-- Listing recent games
-- Querying player win counts
-- Retrieving highest scores
-
-These features are tested in the persistence test suite.
-
-## Commands
-
-### Local Build
-
-Compile the project:
 ```bash
-mvn compile
+# Watch three bots play a full match to 500 points
+mvn -q compile exec:java -Dexec.mainClass="uno.Main" -Dexec.args="--bots 3"
+
+# Play yourself against two bots
+mvn -q compile exec:java -Dexec.mainClass="uno.Main" -Dexec.args="--human --bots 2"
 ```
 
-### Local Test
+Equivalent convenience scripts (they just call Maven):
 
-Run the tests:
 ```bash
-mvn test
+scripts/run.sh --human --bots 2      # compile + run
+scripts/test.sh                      # run the test suite
 ```
 
-### Local Run
+## Command-line options
 
-Run the application (example with 3 bots and 1 human player, 1 game):
+| Option        | Meaning                                                        |
+|---------------|----------------------------------------------------------------|
+| `--human`     | Add a human player named "You" (default: bots only).           |
+| `--bots N`    | Number of computer players (default: 3).                       |
+| `--target N`  | Play rounds until a player reaches N points (default: 500).    |
+| `--games N`   | Instead play exactly N rounds (a fixed-length match).          |
+| `--seed N`    | Seed the shuffler for reproducible games.                      |
+| `--quiet`     | Suppress per-turn narration (keeps standings and final result).|
+| `--self-test` | Run the built-in characterization checks and exit.             |
+| `--help`      | Print usage.                                                   |
+
+Total players (human + bots) must be between **2 and 4**.
+
+## How to play
+
+On your turn the game shows the up-card, any called color, and your hand as an
+indexed list, e.g. `0:R5 1:G+2 2:W`. At the prompt you can:
+
+- type an **index** (`1`) or a **card code** (`G+2`) to play that card;
+- type **`DRAW`** to draw one card. If the drawn card is playable you are asked
+  whether to play it; otherwise your turn passes.
+
+Card codes: colors are `R Y G B`; numbers `0`–`9`; `S` = Skip, `R` = Reverse,
+`+2` = Draw Two; `W` = Wild, `W4` = Wild Draw Four (for example `RS`, `B+2`,
+`W4`). After a wild you are prompted for the color to call (`R/Y/G/B`).
+
+When you play your second-to-last card you are asked **"Call UNO?"**. If you
+decline, you are immediately caught and draw two penalty cards.
+
+Invalid input (a bad index, an unknown card, an illegal play, a non-number for a
+numeric option) is handled without crashing — you are prompted again or shown a
+usage message.
+
+## Rules implemented
+
+Correct 108-card deck, legal-play validation (color / number / action / wild),
+Skip, Reverse (acts as Skip with two players), Draw Two, Wild, Wild Draw Four,
+draw-one-then-play-or-pass, UNO call with a missed-call penalty, round scoring,
+and a multi-round match played to a target score. See
+[`docs/rules-supported.md`](docs/rules-supported.md) for the exact behavior and
+the variants/simplifications chosen, and [`docs/final-report.md`](docs/final-report.md)
+for the full write-up.
+
+## Architecture
+
+The rules do not live in the CLI. Responsibilities are split so game logic can
+be tested without any console input:
+
+| Class            | Responsibility                                            |
+|------------------|-----------------------------------------------------------|
+| `Card`           | Immutable card value object (color, rank, number, points).|
+| `CardColor`      | The four colors plus `NONE` for wilds.                    |
+| `Rules`          | Legal-play validation and round scoring (pure functions). |
+| `CardEffect`     | The state change each played card causes (Skip/Reverse/…).|
+| `BotStrategy`    | Computer-player card/color/UNO decisions (pure).          |
+| `GameState`      | All mutable state and deck operations (draw, deal, build).|
+| `ConsoleView`    | Every read from stdin and write to stdout.                |
+| `Main`           | CLI parsing and the match/round/turn orchestration loops. |
+
+`PlayContext` bundles the current up-card and called color that the legality
+rule reads.
+
+## Build, test, package
+
 ```bash
-mvn exec:java -Dexec.mainClass="uno.Main" -Dexec.args="--human --bots 2 --games 1"
+mvn compile          # compile
+mvn test             # run all JUnit tests
+mvn package          # build target/uno-cli-1.0.0.jar (main class uno.Main)
 ```
 
-### Package Creation
+Requires JDK 25 and Maven. No other setup is needed; the H2 database file is
+created automatically under your home directory on first run.
 
-Create an executable JAR:
-```bash
-mvn package
-```
-The JAR will be placed in `target/uno-cli-1.0.0.jar`.
+## Persistence (optional feature)
 
-### Docker Build
-
-Build the Docker image:
-```bash
-docker build -t uno-cli .
-```
-
-### Docker Run
-
-Run the Docker container (example with 3 bots and 1 human player, 1 game):
-```bash
-docker run --rm uno-cli --human --bots 2 --games 1
-```
+At the end of a match the players, match metadata (start/end time, rounds,
+winner), and per-player scores are stored via Hibernate ORM in an embedded H2
+database (`~/uno.mv.db`). See [`docs/database.md`](docs/database.md) for the
+schema. Persistence is best-effort: if the database is unavailable the match
+still completes and a warning is logged.
 
 ## Logging
 
-The application uses slf4j logging library for logging important game events:
-- Game start
-- Player turn
-- Card played
-- Card drawn
-- Invalid input
-- Round or game end
+The game logs key events (game start, turns, cards played/drawn, invalid input,
+round/game end) via SLF4J at INFO level to stderr. Third-party (Hibernate)
+logging is raised to WARN so it does not clutter the player-facing output.
 
-Logs are printed to the console with the INFO level.
+## Docker
 
-## Notes
-
-- The CLI should still be readable for players; logging does not replace normal user-facing output.
-- The Docker build uses the official Eclipse Temurin JDK 25 image.
-- The application is packaged as an executable JAR with the main class set to `uno.Main`.
-
+```bash
+docker build -t uno-cli .
+docker run --rm uno-cli --bots 3
+```
